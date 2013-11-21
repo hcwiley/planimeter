@@ -23,7 +23,7 @@
 
 
 using namespace std;
-//using namespace cv;
+using namespace cv;
 
 // Forwards
 //void Filter ( IplImage * img );
@@ -47,7 +47,14 @@ const double MIN_TIME_DELTA = 0.05;
 typedef cv::vector<cv::vector<cv::Point> > TContours;
 
 TContours templateContour;
+TContours templateContours;
 TContours liveContour;
+cv::vector<cv::Point> origins;
+int SCALE_REF = 1;
+cv::vector<int> areas;
+
+Mat frame, frameCopy, image, grayMat, differenceMat;//edgesMat;
+Mat templateMat, mhiMat;
 
 void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differenceMat){
   printf("capture new template image\n");
@@ -73,34 +80,35 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
 
   Canny(*templateMat, canny_output, 100, 300, 3);
 
-  cv::findContours( canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+  cv::findContours( canny_output, contours, hierarchy, CV_RETR_LIST, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
   //cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
 
   // Print number of found contours.
   //std::cout << "Found " << contours.size() << " contours." << std::endl;
 
   /// Draw contours
-  int first = contours.size() + 1;
+  int first = 0;
   int num_over_min_area = 0;
-  cv::vector<cv::Point> origins;
-  cv::vector<int> areas;
-  for( int i = 0; i< contours.size(); i++ )
+  origins.clear();
+  areas.clear();
+  templateContours.clear();
+  for( int i = contours.size() - 1; i >= 0; i-- )
   {
     bool contains = false;
     if( contourArea(contours[i]) > min_contour_area){
       for( int j = 0; j< origins.size(); j++ ){
         //printf("origins: %d, %d\n", origins[j].x, origins[j].y);
         //printf("contours: %d, %d\n", contours[j][0].x, contours[j][0].y);
-        int bounds = 15;
+        int bounds = 150;
         int origX = origins[j].x;
         int origY = origins[j].y;
-        int conX = contours[j][0].x;
-        int conY = contours[j][0].y;
+        int conX = contours[i][0].x;
+        int conY = contours[i][0].y;
         int conArea = contourArea(contours[i]);
         if( origX + bounds >= conX && origX - bounds <= conX ){
           if( origY + bounds >= conY && origY - bounds <= conY ){
-            if( areas[j] * 1.40 >= conArea && areas[j] * 0.60 <= conArea ){
-              printf("contains!!\n");
+            if( areas[j] * 1.20 >= conArea && areas[j] * 0.80 <= conArea ){
+              //printf("contains!!\n");
               contains = true;
             }
           }
@@ -109,22 +117,15 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
       }
       if(contains)
         continue;
-      if ( first > i){
+      if ( first < i){
         templateContour.clear();
-        templateContour.push_back(contours[i]);
+      templateContour.push_back(contours[i]);
         first = i;
       }
       origins.push_back(contours[i][0]);
+      templateContours.push_back(contours[i]);
       double area0 = contourArea(contours[i]);
       areas.push_back(area0);
-      //printf("contour: %f, %d\n", area0, num_over_min_area);
-      cv::Scalar col = cv::Scalar( 0,255,0);
-      char str[30];
-      double scale = 1000*1000/(1946); // 1946 is a magic number that needs to be derived programmatically eventually
-      area0 *= scale; // to sq ft
-      area0 /= 43560; // to acres
-      sprintf(str, "area: %.3f acres" , area0);
-      putText(*differenceMat, str, contours[i][0], cv::FONT_HERSHEY_PLAIN, 1, col, 1, 8, false);
       templateContour[0].insert(templateContour[0].end(), contours[i].begin(), contours[i].end());
       num_over_min_area++;
     }
@@ -132,14 +133,57 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   //cv::convexHull(templateContour[0], templateContour[0], false);
   cv::Scalar color = cv::Scalar( 0, 0, 255);
   drawContours( *differenceMat, templateContour, 0, color, 2, 8, hierarchy, 0, cv::Point() );
+
+  for( int j = 0; j< origins.size(); j++ ){
+    char str[40];
+    double scale = 1000*1000/(SCALE_REF); // 1946 is a magic number that needs to be derived programmatically eventually
+    double area0 = areas[j];
+    area0 *= scale; // to sq ft
+    area0 /= 43560; // to acres
+    sprintf(str, "area: %.3f acres" , area0);
+    putText(*differenceMat, str, origins[j], cv::FONT_HERSHEY_PLAIN, 1, Scalar( 0,255,0), 1, 8, false);
+  }
 }
 
+void liveWindowClickCallback(int event, int x, int y, int flags, void* userdata)
+{
+  if  ( event == EVENT_LBUTTONDOWN )
+  {
+    cout << "Left button of the mouse is clicked - position (" << x << ", " << y << ")" << endl;
+    for( int i = 0; i< origins.size(); i++ ){
+      printf("origins: %d, %d\n", origins[i].x, origins[i].y);
+      int origX = origins[i].x;
+      int origY = origins[i].y;
+      int bounds = 20;
+      int isIn = -1;
+      //printf("contours size: %d (%d)\n", templateContours.size(), i);
+      if(templateContours.size() > i)
+        isIn = pointPolygonTest(templateContours[i], Point(x,y), false);
+      if(isIn == 1){
+        printf("found the origin you want: %d!!\n", isIn);
+        SCALE_REF = areas[i];
+        newTemplateImage(&templateMat, &grayMat, &differenceMat);
+      }
+    }
+  }
+  else if  ( event == EVENT_RBUTTONDOWN )
+  {
+    cout << "Right button of the mouse is clicked - position (" << x << ", " << y << ")" << endl;
+  }
+  else if  ( event == EVENT_MBUTTONDOWN )
+  {
+    cout << "Middle button of the mouse is clicked - position (" << x << ", " << y << ")" << endl;
+  }
+  else if ( event == EVENT_MOUSEMOVE )
+  {
+    //cout << "Mouse move over the window - position (" << x << ", " << y << ")" << endl;
+
+  }
+}
 
 int main( int argc, const char** argv )
 {
   CvCapture* capture = 0;
-  cv::Mat frame, frameCopy, image, grayMat, differenceMat;//edgesMat;
-  cv::Mat templateMat, mhiMat;
 
   IplImage	*	img		= NULL;
   IplImage	*	gray	= NULL;
@@ -182,7 +226,7 @@ int main( int argc, const char** argv )
   //cvNamedWindow( "gray", 1 );
   //cvNamedWindow( "edges", 1 );
   cvNamedWindow( "difference", 1 );
-  cvNamedWindow( "template", 1 );
+  //cvNamedWindow( "template", 1 );
 
   cv::resizeWindow("live", 640, 480);//50, 50);
   cv::resizeWindow("template", 640, 480);//700, 50);
@@ -191,8 +235,10 @@ int main( int argc, const char** argv )
 
   cv::moveWindow("live", 50, 50);
   cv::moveWindow("template", 700, 50);
-  cv::moveWindow("difference", 1200, 50);
+  cv::moveWindow("difference", 700, 50);
   //cv::moveWindow("gray", 50, 500);
+  //
+  cv::setMouseCallback("live", liveWindowClickCallback, NULL);
 
   gray = cvCreateImage ( cvSize ( width, height ), IPL_DEPTH_8U, 1 );
   if ( !gray ) {
@@ -228,7 +274,7 @@ int main( int argc, const char** argv )
   {
     cout << "In capture ..." << endl;
     frame = cv::imread("contours.jpg", CV_LOAD_IMAGE_COLOR);
-    while(run)
+    while(true)
     {
 
       double timestamp = (double)clock()/CLOCKS_PER_SEC; // get current time in seconds
@@ -239,9 +285,9 @@ int main( int argc, const char** argv )
       if( frame.empty() )
         break;
       //if( img->origin == IPL_ORIGIN_TL )
-        //frame.copyTo( frameCopy );
+      //frame.copyTo( frameCopy );
       //else
-        //flip( frame, frameCopy, 0 );
+      //flip( frame, frameCopy, 0 );
 
 
       //cv::Mat differenceMat(frame);
@@ -270,16 +316,16 @@ int main( int argc, const char** argv )
       //int first = contours.size() + 1;
       //for( int i = 0; i< contours.size(); i++ )
       //{
-        //if( contourArea(contours[i]) > min_contour_area){
-          //if ( first > i){
-            //liveContour.clear();
-            //liveContour.push_back(contours[i]);
-            //first = i;
-          //}
-          //liveContour[0].insert(liveContour[0].end(), contours[i].begin(), contours[i].end());
-          //cv::Scalar color = cv::Scalar(50*i,0,0);
-          //drawContours( frame, contours, 0, color, 2, 8, hierarchy, 0, cv::Point() );
-        //}
+      //if( contourArea(contours[i]) > min_contour_area){
+      //if ( first > i){
+      //liveContour.clear();
+      //liveContour.push_back(contours[i]);
+      //first = i;
+      //}
+      //liveContour[0].insert(liveContour[0].end(), contours[i].begin(), contours[i].end());
+      //cv::Scalar color = cv::Scalar(50*i,0,0);
+      //drawContours( frame, contours, 0, color, 2, 8, hierarchy, 0, cv::Point() );
+      //}
       //}
 
       //cv::convexHull(liveContour[0], liveContour[0], false);
@@ -293,9 +339,9 @@ int main( int argc, const char** argv )
       }
 
       //if(!templateContour.empty()){
-        //drawContours( frame, templateContour, 0, cv::Scalar(0,255,0), 2, 8, hierarchy, 0, cv::Point() );
-        //double area0 = contourArea(liveContour);
-        //printf("contour: %f\n", area0);
+      //drawContours( frame, templateContour, 0, cv::Scalar(0,255,0), 2, 8, hierarchy, 0, cv::Point() );
+      //double area0 = contourArea(liveContour);
+      //printf("contour: %f\n", area0);
       //}
 
 
@@ -312,18 +358,22 @@ int main( int argc, const char** argv )
           case UP_KEY:
             min_contour_area += 10000;
             printf("min_contour_area: %d\n", min_contour_area);
+            newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
           case DOWN_KEY:
             min_contour_area -= 10000;
             printf("min_contour_area: %d\n", min_contour_area);
+            newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
           case LEFT_KEY:
             min_contour_area -= 100;
             printf("min_contour_area: %d\n", min_contour_area);
+            newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
           case RIGHT_KEY:
             min_contour_area += 100;
             printf("min_contour_area: %d\n", min_contour_area);
+            newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
           default:
             printf("%d key hit\n", key);
@@ -344,14 +394,16 @@ int main( int argc, const char** argv )
 
       cvShowImage( "live", img );
       //cvShowImage( "gray", gray );
-      cvShowImage( "template", templateImg);
+      //cvShowImage( "template", templateImg);
 
 
+      if(!run)
+        break;
     }
   }
 
   //cvReleaseCapture( &capture );
-  cvReleaseImage ( &img );
+  //cvReleaseImage ( &img );
   //cvReleaseImage ( &edges);
   //cvReleaseImage ( &templateImg);
   //cvReleaseImage ( &difference);
@@ -360,7 +412,7 @@ int main( int argc, const char** argv )
   cvDestroyWindow( "difference" );
   //cvDestroyWindow( "gray" );
   //cvDestroyWindow( "edges" );
-  cvDestroyWindow( "template" );
+  //cvDestroyWindow( "template" );
 
   return 0;
 }
