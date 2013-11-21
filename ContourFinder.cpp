@@ -33,7 +33,9 @@ using namespace std;
 // Global variables
 int		width = 1;
 int		height = 1;
-//CvFont	_idFont;
+CvFont	_idFont;
+//
+int min_contour_area = 1000;
 
 cv::RNG rng(12345);
 
@@ -47,9 +49,10 @@ typedef cv::vector<cv::vector<cv::Point> > TContours;
 TContours templateContour;
 TContours liveContour;
 
-void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat){
+void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differenceMat){
   printf("capture new template image\n");
   *templateMat = grayMat->clone();
+  cv::absdiff( *grayMat, *grayMat, *differenceMat); // get difference between frames
   /*
    * Find features
    */
@@ -70,30 +73,65 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat){
 
   Canny(*templateMat, canny_output, 100, 300, 3);
 
-  //cv::findContours( canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
-  cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+  cv::findContours( canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+  //cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
 
   // Print number of found contours.
   //std::cout << "Found " << contours.size() << " contours." << std::endl;
 
-  double area0 = contourArea(templateContour[0]);
-  printf("contour: %f\n", area0);
   /// Draw contours
   int first = contours.size() + 1;
+  int num_over_min_area = 0;
+  cv::vector<cv::Point> origins;
+  cv::vector<int> areas;
   for( int i = 0; i< contours.size(); i++ )
   {
-    if( contourArea(contours[i]) > 10){
+    bool contains = false;
+    if( contourArea(contours[i]) > min_contour_area){
+      for( int j = 0; j< origins.size(); j++ ){
+        //printf("origins: %d, %d\n", origins[j].x, origins[j].y);
+        //printf("contours: %d, %d\n", contours[j][0].x, contours[j][0].y);
+        int bounds = 15;
+        int origX = origins[j].x;
+        int origY = origins[j].y;
+        int conX = contours[j][0].x;
+        int conY = contours[j][0].y;
+        int conArea = contourArea(contours[i]);
+        if( origX + bounds >= conX && origX - bounds <= conX ){
+          if( origY + bounds >= conY && origY - bounds <= conY ){
+            if( areas[j] * 1.40 >= conArea && areas[j] * 0.60 <= conArea ){
+              printf("contains!!\n");
+              contains = true;
+            }
+          }
+        }
+        //printf("-------------\n");
+      }
+      if(contains)
+        continue;
       if ( first > i){
         templateContour.clear();
         templateContour.push_back(contours[i]);
         first = i;
       }
+      origins.push_back(contours[i][0]);
+      double area0 = contourArea(contours[i]);
+      areas.push_back(area0);
+      //printf("contour: %f, %d\n", area0, num_over_min_area);
+      cv::Scalar col = cv::Scalar( 0,255,0);
+      char str[30];
+      double scale = 1000*1000/(1946); // 1946 is a magic number that needs to be derived programmatically eventually
+      area0 *= scale; // to sq ft
+      area0 /= 43560; // to acres
+      sprintf(str, "area: %.3f acres" , area0);
+      putText(*differenceMat, str, contours[i][0], cv::FONT_HERSHEY_PLAIN, 1, col, 1, 8, false);
       templateContour[0].insert(templateContour[0].end(), contours[i].begin(), contours[i].end());
+      num_over_min_area++;
     }
   }
   //cv::convexHull(templateContour[0], templateContour[0], false);
-  cv::Scalar color = cv::Scalar( 0,255,0);
-  drawContours( *templateMat, templateContour, 0, color, 2, 8, hierarchy, 0, cv::Point() );
+  cv::Scalar color = cv::Scalar( 0, 0, 255);
+  drawContours( *differenceMat, templateContour, 0, color, 2, 8, hierarchy, 0, cv::Point() );
 }
 
 
@@ -125,7 +163,7 @@ int main( int argc, const char** argv )
   bool run = true;
 
   // Initialize the Font used to draw into the source image
-  //cvInitFont ( &_idFont, CV_FONT_VECTOR0, 0.5, 0.5, 0.0, 1 );
+  cvInitFont ( &_idFont, CV_FONT_VECTOR0, 0.5, 0.5, 0.0, 1 );
 
 
 
@@ -189,6 +227,7 @@ int main( int argc, const char** argv )
   if( true )
   {
     cout << "In capture ..." << endl;
+    frame = cv::imread("contours.jpg", CV_LOAD_IMAGE_COLOR);
     while(run)
     {
 
@@ -196,7 +235,6 @@ int main( int argc, const char** argv )
 
       //img = cvQueryFrame( capture );
       //frame = img;
-      frame = cv::imread("contours.jpg", CV_LOAD_IMAGE_COLOR);
 
       if( frame.empty() )
         break;
@@ -221,7 +259,7 @@ int main( int argc, const char** argv )
       Canny(grayMat, canny_output, 10, 50, 3);
       //Canny(grayMat, canny_output, 1, 100, 3);
 
-      cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
+      //cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
       //cv::findContours( canny_output, contours, hierarchy, CV_RETR_TREE, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
 
       // Print number of found contours.
@@ -229,35 +267,36 @@ int main( int argc, const char** argv )
 
 
       /// Draw contours
-      int first = contours.size() + 1;
-      for( int i = 0; i< contours.size(); i++ )
-      {
-        if( contourArea(contours[i]) > 10){
-          if ( first > i){
-            liveContour.clear();
-            liveContour.push_back(contours[i]);
-            first = i;
-          }
-          liveContour[0].insert(liveContour[0].end(), contours[i].begin(), contours[i].end());
-        }
-      }
+      //int first = contours.size() + 1;
+      //for( int i = 0; i< contours.size(); i++ )
+      //{
+        //if( contourArea(contours[i]) > min_contour_area){
+          //if ( first > i){
+            //liveContour.clear();
+            //liveContour.push_back(contours[i]);
+            //first = i;
+          //}
+          //liveContour[0].insert(liveContour[0].end(), contours[i].begin(), contours[i].end());
+          //cv::Scalar color = cv::Scalar(50*i,0,0);
+          //drawContours( frame, contours, 0, color, 2, 8, hierarchy, 0, cv::Point() );
+        //}
+      //}
 
       //cv::convexHull(liveContour[0], liveContour[0], false);
-      cv::Scalar color = cv::Scalar(255,0,255);
-      drawContours( frame, liveContour, 0, color, 2, 8, hierarchy, 0, cv::Point() );
 
-      cvtColor (frame, grayMat, CV_BGR2GRAY );
+      //cvtColor (frame, grayMat, CV_BGR2GRAY );
+      grayMat= frame.clone();
 
       *gray = grayMat;
       if(templateMat.empty() ){
-        newTemplateImage(&templateMat, &grayMat);
+        newTemplateImage(&templateMat, &grayMat, &differenceMat);
       }
 
-      if(!templateContour.empty()){
-        drawContours( frame, templateContour, 0, cv::Scalar(0,255,0), 2, 8, hierarchy, 0, cv::Point() );
+      //if(!templateContour.empty()){
+        //drawContours( frame, templateContour, 0, cv::Scalar(0,255,0), 2, 8, hierarchy, 0, cv::Point() );
         //double area0 = contourArea(liveContour);
         //printf("contour: %f\n", area0);
-      }
+      //}
 
 
       int key = cv::waitKey( 10 );
@@ -267,23 +306,24 @@ int main( int argc, const char** argv )
             run = false;
             break;
           case T_KEY:
-            newTemplateImage(&templateMat, &grayMat);
+            //newTemplateImage(&templateMat, &grayMat);
+            newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
           case UP_KEY:
-            upperThresh = cv::Scalar(upperThresh.val[0] + 1, upperThresh.val[1] + 1, upperThresh.val[2] + 1);
-            printf("upperThresh: %f, %f, %f\n", upperThresh.val[0], upperThresh.val[1], upperThresh.val[2]);
+            min_contour_area += 10000;
+            printf("min_contour_area: %d\n", min_contour_area);
             break;
           case DOWN_KEY:
-            upperThresh = cv::Scalar(upperThresh.val[0] - 1, upperThresh.val[1] - 1, upperThresh.val[2] - 1);
-            printf("upperThresh: %f, %f, %f\n", upperThresh.val[0], upperThresh.val[1], upperThresh.val[2]);
+            min_contour_area -= 10000;
+            printf("min_contour_area: %d\n", min_contour_area);
             break;
           case LEFT_KEY:
-            lowerThresh = cv::Scalar(lowerThresh.val[0] + 1, lowerThresh.val[1] + 1, lowerThresh.val[2] + 1);
-            printf("lowerThresh: %f, %f, %f\n", lowerThresh.val[0], lowerThresh.val[1], lowerThresh.val[2]);
+            min_contour_area -= 100;
+            printf("min_contour_area: %d\n", min_contour_area);
             break;
           case RIGHT_KEY:
-            lowerThresh = cv::Scalar(lowerThresh.val[0] - 1, lowerThresh.val[1] - 1, lowerThresh.val[2] - 1);
-            printf("lowerThresh: %f, %f, %f\n", lowerThresh.val[0], lowerThresh.val[1], lowerThresh.val[2]);
+            min_contour_area += 100;
+            printf("min_contour_area: %d\n", min_contour_area);
             break;
           default:
             printf("%d key hit\n", key);
@@ -292,17 +332,18 @@ int main( int argc, const char** argv )
       }
 
 
-      cv::absdiff( grayMat, templateMat, differenceMat); // get difference between frames
 
 
-      *difference = differenceMat;
+      if(!templateMat.empty() ){
+        *difference = differenceMat;
+        cvShowImage( "difference", difference );
+      }
       *img = frame;
       *templateImg = templateMat;
 
 
       cvShowImage( "live", img );
       //cvShowImage( "gray", gray );
-      cvShowImage( "difference", difference );
       cvShowImage( "template", templateImg);
 
 
