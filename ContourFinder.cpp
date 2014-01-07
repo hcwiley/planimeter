@@ -7,10 +7,18 @@
 #include <time.h>
 #include <ctype.h>
 #include <iostream>
-//#include <stdlib.h>
+#include <stdlib.h>
 #include <stdio.h>
-//#include <cstdio>
-//#include <cmath>
+#include <cstdio>
+#include <cmath>
+
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/surface/gp3.h>
+#include <pcl/visualization/pcl_visualizer.h>
 
 
 #define ESC_KEY 27
@@ -20,6 +28,7 @@
 #define LEFT_KEY 63234
 #define DOWN_KEY 63233
 #define RIGHT_KEY 63235
+#define S_KEY 115
 
 
 using namespace std;
@@ -52,6 +61,9 @@ TContours liveContour;
 cv::vector<cv::Point> origins;
 int SCALE_REF = 1;
 cv::vector<int> areas;
+
+//boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer;
+pcl::visualization::PCLVisualizer viewer ("Volume");
 
 Mat frame, frameCopy, image, grayMat, differenceMat;//edgesMat;
 Mat templateMat, mhiMat;
@@ -92,6 +104,7 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   origins.clear();
   areas.clear();
   templateContours.clear();
+  viewer.removeAllPointClouds();
   for( int i = contours.size() - 1; i >= 0; i-- )
   {
     bool contains = false;
@@ -128,11 +141,68 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
       areas.push_back(area0);
       templateContour[0].insert(templateContour[0].end(), contours[i].begin(), contours[i].end());
       num_over_min_area++;
+      std::cout << "Creating Point Cloud..." <<std::endl;
+      pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+      for(int p = 0; p < contours[i].size(); p++){
+        //Insert info into point cloud structure
+        pcl::PointXYZ point;
+        point.x = contours[i][p].x;
+        point.y = contours[i][p].y;
+        point.z = 40;
+        //point.rgb = *reinterpret_cast<float*>(&rgb);
+        point_cloud_ptr->points.push_back (point);
+      }
+      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler (point_cloud_ptr, 255 * i, 0, 255);
+      char name[20];
+      sprintf(name, "volume%d", i);
+      viewer.addPointCloud<pcl::PointXYZ> (point_cloud_ptr, handler, name);
+      /*
+      // Normal estimation*
+      pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> n;
+      pcl::PointCloud<pcl::Normal>::Ptr normals (new pcl::PointCloud<pcl::Normal>);
+      pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
+      tree->setInputCloud (point_cloud_ptr);
+      n.setInputCloud (point_cloud_ptr);
+      n.setSearchMethod (tree);
+      n.setKSearch (20);
+      n.compute (*normals);
+      //* normals should not contain the point normals + surface curvatures
+
+      // Concatenate the XYZ and normal fields*
+      pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals (new pcl::PointCloud<pcl::PointNormal>);
+      pcl::concatenateFields (*point_cloud_ptr, *normals, *cloud_with_normals);
+      //* cloud_with_normals = cloud + normals
+
+      // Create search tree*
+      pcl::search::KdTree<pcl::PointNormal>::Ptr tree2 (new pcl::search::KdTree<pcl::PointNormal>);
+      tree2->setInputCloud (cloud_with_normals);
+
+      // Initialize objects
+      pcl::GreedyProjectionTriangulation<pcl::PointNormal> gp3;
+      pcl::PolygonMesh triangles;
+
+      // Set the maximum distance between connected points (maximum edge length)
+      gp3.setSearchRadius (0.025);
+
+      // Set typical values for the parameters
+      gp3.setMu (2.5);
+      gp3.setMaximumNearestNeighbors (100);
+      gp3.setMaximumSurfaceAngle(M_PI/4); // 45 degrees
+      gp3.setMinimumAngle(M_PI/18); // 10 degrees
+      gp3.setMaximumAngle(2*M_PI/3); // 120 degrees
+      gp3.setNormalConsistency(false);
+
+      // Get result
+      gp3.setInputCloud (cloud_with_normals);
+      gp3.setSearchMethod (tree2);
+      gp3.reconstruct (triangles);
+      */
     }
   }
   //cv::convexHull(templateContour[0], templateContour[0], false);
   cv::Scalar color = cv::Scalar( 0, 0, 255);
   drawContours( *differenceMat, templateContour, 0, color, 2, 8, hierarchy, 0, cv::Point() );
+  viewer.addCoordinateSystem(1.0,0);
 
   for( int j = 0; j< origins.size(); j++ ){
     char str[40];
@@ -227,6 +297,8 @@ int main( int argc, const char** argv )
   //cvNamedWindow( "edges", 1 );
   cvNamedWindow( "difference", 1 );
   //cvNamedWindow( "template", 1 );
+
+  //viewer.setSize (800, 600);
 
   cv::resizeWindow("live", 640, 480);//50, 50);
   cv::resizeWindow("template", 640, 480);//700, 50);
@@ -375,6 +447,9 @@ int main( int argc, const char** argv )
             printf("min_contour_area: %d\n", min_contour_area);
             newTemplateImage(&templateMat, &grayMat, &differenceMat);
             break;
+          case S_KEY:
+            // save the template image
+            break;
           default:
             printf("%d key hit\n", key);
             break;
@@ -393,6 +468,8 @@ int main( int argc, const char** argv )
 
 
       cvShowImage( "live", img );
+      //viewer.spin();
+      
       //cvShowImage( "gray", gray );
       //cvShowImage( "template", templateImg);
 
