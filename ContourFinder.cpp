@@ -13,12 +13,22 @@
 #include <cmath>
 
 #include <pcl/point_cloud.h>
+#include <pcl/visualization/pcl_visualizer.h>
+
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/features/normal_3d.h>
 #include <pcl/surface/gp3.h>
-#include <pcl/visualization/pcl_visualizer.h>
+
+
+#include <pcl/ModelCoefficients.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/filters/project_inliers.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <pcl/surface/concave_hull.h>
 
 
 #define ESC_KEY 27
@@ -68,6 +78,7 @@ pcl::visualization::PCLVisualizer viewer ("Volume");
 Mat frame, frameCopy, image, grayMat, differenceMat;//edgesMat;
 Mat templateMat, mhiMat;
 
+int volumeCount = 0;
 void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differenceMat){
   printf("capture new template image\n");
   *templateMat = grayMat->clone();
@@ -142,61 +153,146 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
       templateContour[0].insert(templateContour[0].end(), contours[i].begin(), contours[i].end());
       num_over_min_area++;
       std::cout << "Creating Point Cloud..." <<std::endl;
-      pcl::PointCloud<pcl::PointXYZ>::Ptr point_cloud_ptr (new pcl::PointCloud<pcl::PointXYZ>);
+      //pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>), 
+                                      cloud_filtered (new pcl::PointCloud<pcl::PointXYZ>), 
+                                      cloud_projected (new pcl::PointCloud<pcl::PointXYZ>);
       for(int p = 0; p < contours[i].size(); p++){
         //Insert info into point cloud structure
-        pcl::PointXYZ point;
-        point.x = contours[i][p].x;
-        point.y = contours[i][p].y;
-        point.z = 40;
-        //point.rgb = *reinterpret_cast<float*>(&rgb);
-        point_cloud_ptr->points.push_back (point);
+        if( contourArea(contours[i]) > 21000 ) {
+          pcl::PointXYZ point;
+          point.x = contours[i][p].x;
+          point.y = contours[i][p].y;
+          point.z = 0;
+          cloud->points.push_back (point);
+        }
+        else if( contourArea(contours[i]) > 11000 ) {
+          pcl::PointXYZ point;
+          point.x = contours[i][p].x;
+          point.y = contours[i][p].y;
+          point.z = 20;
+          cloud->points.push_back (point);
+          point.x = contours[i][p].x;
+          point.y = contours[i][p].y;
+          point.z = -20;
+          cloud->points.push_back (point);
+        }
+        else if( contourArea(contours[i]) > 1000 ) {
+          pcl::PointXYZ point;
+          point.x = contours[i][p].x;
+          point.y = contours[i][p].y;
+          point.z = 40;
+          cloud->points.push_back (point);
+          point.x = contours[i][p].x;
+          point.y = contours[i][p].y;
+          point.z = -40;
+          cloud->points.push_back (point);
+        }
       }
-      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler (point_cloud_ptr, 255 * i, 0, 255);
+      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler (cloud, 255 * i, 0, 105);
       char name[20];
-      sprintf(name, "volume%d", i);
-      viewer.addPointCloud<pcl::PointXYZ> (point_cloud_ptr, handler, name);
-      /*
+      //sprintf(name, "volume%d", volumeCount);
+      //viewer.addPointCloud<pcl::PointXYZ> (cloud, handler, name);
+      
+      pcl::PassThrough<pcl::PointXYZ> pass;
+      pass.setInputCloud (cloud);
+      pass.setFilterFieldName ("z");
+      pass.setFilterLimits (-45, 45.1);
+      pass.filter (*cloud_filtered);
+      std::cerr << "PointCloud after filtering has: "
+                << cloud_filtered->points.size () << " data points." << std::endl;
+    
+      pcl::ModelCoefficients::Ptr coefficients (new pcl::ModelCoefficients);
+      pcl::PointIndices::Ptr inliers (new pcl::PointIndices);
+      // Create the segmentation object
+      pcl::SACSegmentation<pcl::PointXYZ> seg;
+      // Optional
+      seg.setOptimizeCoefficients (true);
+      // Mandatory
+      seg.setModelType (pcl::SACMODEL_PLANE);
+      seg.setMethodType (pcl::SAC_RANSAC);
+      seg.setDistanceThreshold (100000000.01);
+    
+      seg.setInputCloud (cloud_filtered);
+      seg.segment (*inliers, *coefficients);
+      std::cerr << "PointCloud after segmentation has: "
+                << inliers->indices.size () << " inliers." << std::endl;
+    
+      // Project the model inliers
+      pcl::ProjectInliers<pcl::PointXYZ> proj;
+      proj.setModelType (pcl::SACMODEL_PLANE);
+      proj.setIndices (inliers);
+      proj.setInputCloud (cloud_filtered);
+      proj.setModelCoefficients (coefficients);
+      proj.filter (*cloud_projected);
+      std::cerr << "PointCloud after projection has: "
+                << cloud_projected->points.size () << " data points." << std::endl;
+    
+      // Create a Concave Hull representation of the projected inliers
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_hull (new pcl::PointCloud<pcl::PointXYZ>);
+      pcl::ConcaveHull<pcl::PointXYZ> chull;
+      chull.setInputCloud (cloud_projected);
+      chull.setAlpha (0.8);
+      chull.reconstruct (*cloud_hull);
+    
+      std::cerr << "Concave hull has: " << cloud_hull->points.size ()
+                << " data points." << std::endl;
+
+      pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler_hull (cloud_hull, 0, 255, 0);
+      sprintf(name, "vol-hull%d", volumeCount);
+      viewer.addPointCloud<pcl::PointXYZ> (cloud_hull, handler_hull, name);
+          
+
       // Normal estimation*
       pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> n;
       pcl::PointCloud<pcl::Normal>::Ptr normals (new pcl::PointCloud<pcl::Normal>);
       pcl::search::KdTree<pcl::PointXYZ>::Ptr tree (new pcl::search::KdTree<pcl::PointXYZ>);
-      tree->setInputCloud (point_cloud_ptr);
-      n.setInputCloud (point_cloud_ptr);
+      tree->setInputCloud (cloud);
+      n.setInputCloud (cloud);
       n.setSearchMethod (tree);
-      n.setKSearch (20);
+      n.setKSearch (200000000);
       n.compute (*normals);
       //* normals should not contain the point normals + surface curvatures
-
+      
       // Concatenate the XYZ and normal fields*
       pcl::PointCloud<pcl::PointNormal>::Ptr cloud_with_normals (new pcl::PointCloud<pcl::PointNormal>);
-      pcl::concatenateFields (*point_cloud_ptr, *normals, *cloud_with_normals);
+      pcl::concatenateFields (*cloud, *normals, *cloud_with_normals);
       //* cloud_with_normals = cloud + normals
-
+      
       // Create search tree*
       pcl::search::KdTree<pcl::PointNormal>::Ptr tree2 (new pcl::search::KdTree<pcl::PointNormal>);
       tree2->setInputCloud (cloud_with_normals);
-
+      
       // Initialize objects
       pcl::GreedyProjectionTriangulation<pcl::PointNormal> gp3;
       pcl::PolygonMesh triangles;
-
+      
       // Set the maximum distance between connected points (maximum edge length)
-      gp3.setSearchRadius (0.025);
-
+      gp3.setSearchRadius (1000000.025);
+      
       // Set typical values for the parameters
-      gp3.setMu (2.5);
-      gp3.setMaximumNearestNeighbors (100);
-      gp3.setMaximumSurfaceAngle(M_PI/4); // 45 degrees
-      gp3.setMinimumAngle(M_PI/18); // 10 degrees
-      gp3.setMaximumAngle(2*M_PI/3); // 120 degrees
+      gp3.setMu (200000.5);
+      gp3.setMaximumNearestNeighbors (1000000);
+      gp3.setMaximumSurfaceAngle(M_PI/8); // 45 degrees
+      gp3.setMinimumAngle(M_PI/36); // 10 degrees
+      gp3.setMaximumAngle(M_PI/3); // 120 degrees
       gp3.setNormalConsistency(false);
-
+      
       // Get result
       gp3.setInputCloud (cloud_with_normals);
       gp3.setSearchMethod (tree2);
       gp3.reconstruct (triangles);
-      */
+      
+      // Additional vertex information
+      std::vector<int> parts = gp3.getPartIDs();
+      std::vector<int> states = gp3.getPointStates();
+
+      std::cerr << "Shape has: " << parts.size ()
+                << " parts." << std::endl;
+
+      sprintf(name, "shape-%d", volumeCount++);
+      viewer.addPolygonMesh(triangles, name, 0);
+
     }
   }
   //cv::convexHull(templateContour[0], templateContour[0], false);
@@ -305,9 +401,9 @@ int main( int argc, const char** argv )
   cv::resizeWindow("difference", 640, 480);// 700, 500);
   //cv::resizeWindow("gray", 640, 480);// 50, 500);
 
-  cv::moveWindow("live", 50, 50);
-  cv::moveWindow("template", 700, 50);
-  cv::moveWindow("difference", 700, 50);
+  cv::moveWindow("live", 450, 50);
+  cv::moveWindow("template", 1400, 50);
+  cv::moveWindow("difference", 1400, 50);
   //cv::moveWindow("gray", 50, 500);
   //
   cv::setMouseCallback("live", liveWindowClickCallback, NULL);
