@@ -44,10 +44,6 @@
 using namespace std;
 using namespace cv;
 
-// Forwards
-//void Filter ( IplImage * img );
-//void Find ( IplImage * src, IplImage * img );
-
 //
 // Global variables
 int		width = 1;
@@ -72,7 +68,6 @@ cv::vector<cv::Point> origins;
 int SCALE_REF = 1;
 cv::vector<int> areas;
 
-//boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer;
 pcl::visualization::PCLVisualizer viewer ("Volume");
 
 Mat frame, frameCopy, image, grayMat, differenceMat;//edgesMat;
@@ -83,15 +78,6 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   printf("capture new template image\n");
   *templateMat = grayMat->clone();
   cv::absdiff( *grayMat, *grayMat, *differenceMat); // get difference between frames
-  /*
-   * Find features
-   */
-  //std::vector<cv::Point2f> corners;
-  //cv::Scalar color = cv::Scalar(255,0,0);
-  //cv::goodFeaturesToTrack(*templateMat,corners, 500, 0.01, 10);
-  //for (size_t idx = 0; idx < corners.size(); idx++) {
-  //cv::circle(*templateMat, corners.at(idx), 3, color);
-  //}
 
   /*
    * Do contours
@@ -103,6 +89,7 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
 
   Canny(*templateMat, canny_output, 100, 300, 3);
 
+  // thanks OpenCV... find those contours!
   cv::findContours( canny_output, contours, hierarchy, CV_RETR_LIST, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
   //cv::findContours( canny_output, contours, hierarchy, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_SIMPLE, cv::Point(0, 0) );
 
@@ -116,6 +103,7 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   areas.clear();
   templateContours.clear();
   viewer.removeAllPointClouds();
+  // loop through all the contours and find some templates
   for( int i = contours.size() - 1; i >= 0; i-- ) {
     bool contains = false;
     if( contourArea(contours[i]) > min_contour_area){
@@ -154,7 +142,6 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
     }
   }
   std::cout << "Creating Point Cloud..." <<std::endl;
-  //pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>), 
                                   cloud_filtered (new pcl::PointCloud<pcl::PointXYZ>), 
                                   cloud_projected (new pcl::PointCloud<pcl::PointXYZ>);
@@ -163,10 +150,20 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   int min_x, min_y, max_x, max_y;
   min_x = min_y =  1000000;
   max_x = max_y = -1000000;
+  TContours smallContours;
+  TContours mediumContours;
+  TContours largeContours;
+  // add all the outline points
   for( int i = templateContours.size() - 1; i >= 0; i-- ) {
     if( contourArea(templateContours[i]) < 2100 ) {
       continue;
     }
+    if( contourArea(templateContours[i]) > 21000 )
+      largeContours.push_back(templateContours[i]);
+    else if( contourArea(templateContours[i]) > 8500 )
+      mediumContours.push_back(templateContours[i]);
+    else
+      smallContours.push_back(templateContours[i]);
     for(int p = 0; p < templateContours[i].size(); p++){
       //Insert info into point cloud structure
       if( contourArea(templateContours[i]) > 21000 ) {
@@ -185,6 +182,7 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
           min_y = point.y;
       }
       else if( contourArea(templateContours[i]) > 8500 ) {
+        mediumContours.push_back(templateContours[i]);
         pcl::PointXYZ point;
         point.x = templateContours[i][p].x;
         point.y = templateContours[i][p].y;
@@ -209,23 +207,33 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
     }
   }
   printf("min (%d, %d)\nmax (%d, %d)\n", min_x,min_y,max_x,max_y);
+
+  std::cerr << "small has: " << smallContours.size()
+            << " medium has: " << mediumContours.size() << std::endl;
   // loop through between min and max x and y
-  for( int x = min_x; x < max_x; x+=5 ) {
-    for( int y = min_y; y < max_y; y+=5 ) {
+  // TODO: calculus to fill inbetween the 3 z layers
+  for( int x = min_x; x < max_x; x+=1 ) {
+    for( int y = min_y; y < max_y; y+=1 ) {
       // loop through all the contours
       for( int i = templateContours.size() - 1; i >= 0; i-- ) {
-        // if the point is in the contour, lets do it
-        if( pointPolygonTest(templateContours[i], cv::Point(x,y), false) > 0 ) {
-          // if its in the main area
-          if( contourArea(templateContours[i]) > 21000 ) {
+        // its a small one???
+        if( i < smallContours.size() - 1 && pointPolygonTest(smallContours[i], cv::Point(x,y), false) > 0 ) {
             pcl::PointXYZ point;
             point.x = x;
             point.y = y;
-            point.z = 0;
+            point.z = 40;
             cloud->points.push_back (point);
-          }
-          // if its in the middle sizes
-          else if( contourArea(templateContours[i]) > 8500 ) {
+            point.x = x;
+            point.y = y;
+            point.z = -40;
+            cloud->points.push_back (point);
+        }
+        // if its in the middle sizes
+        if( i < mediumContours.size() - 1 && pointPolygonTest(mediumContours[i], cv::Point(x,y), false) > 0 ) {
+          for( int s = 0; s < smallContours.size() - 1; s++){
+            if( pointPolygonTest(smallContours[s], cv::Point(x,y), false) > 0 ) {
+              continue;
+            }
             pcl::PointXYZ point;
             point.x = x;
             point.y = y;
@@ -236,25 +244,21 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
             point.z = -20;
             cloud->points.push_back (point);
           }
-          // other wise its a small one
-          else{
-            pcl::PointXYZ point;
-            point.x = x;
-            point.y = y;
-            point.z = 40;
-            cloud->points.push_back (point);
-            point.x = x;
-            point.y = y;
-            point.z = -40;
-            cloud->points.push_back (point);
-          }
+        }
+        // its in the main area
+        if( i < largeContours.size() - 1 && pointPolygonTest(largeContours[i], cv::Point(x,y), false) > 0 ) {
+          //pcl::PointXYZ point;
+          //point.x = x;
+          //point.y = y;
+          //point.z = 0;
+          //cloud->points.push_back (point);
         }
       }
     }
   }
   printf("done adding extra points\n");
   char name[20];
-  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler (cloud, 0, 0, 255);
+  pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> handler (cloud, 0, 155, 0);
   sprintf(name, "volume%d", volumeCount);
   viewer.addPointCloud<pcl::PointXYZ> (cloud, handler, name);
   
@@ -265,7 +269,8 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   tree->setInputCloud (cloud);
   n.setInputCloud (cloud);
   n.setSearchMethod (tree);
-  n.setKSearch (21);
+  n.setKSearch (20);
+  //n.setRadiusSearch(20);
   n.compute (*normals);
   //* normals should not contain the point normals + surface curvatures
   
@@ -283,15 +288,15 @@ void newTemplateImage(cv::Mat * templateMat, cv::Mat * grayMat, cv::Mat * differ
   pcl::PolygonMesh triangles;
   
   // Set the maximum distance between connected points (maximum edge length)
-  gp3.setSearchRadius (10);
+  gp3.setSearchRadius (140);
   
   // Set typical values for the parameters
-  gp3.setMu (3.5);
-  gp3.setMaximumNearestNeighbors (21);
-  gp3.setMaximumSurfaceAngle(M_PI/2); // 45 degrees
-  gp3.setMinimumAngle(M_PI/36); // 10 degrees
-  gp3.setMaximumAngle(M_PI/2); // 120 degrees
-  gp3.setNormalConsistency(false);
+  gp3.setMu (99.5);
+  gp3.setMaximumNearestNeighbors (100);
+  gp3.setMaximumSurfaceAngle(M_PI/4); // 45 degrees
+  gp3.setMinimumAngle(M_PI/72); // 10 degrees
+  gp3.setMaximumAngle(M_PI/3); // 120 degrees
+  gp3.setNormalConsistency(true);
   
   // Get result
   gp3.setInputCloud (cloud_with_normals);
